@@ -67,7 +67,9 @@ MODULE qs_scf_output
    USE qs_mo_io,                        ONLY: write_mo_set_to_output_unit
    USE qs_mo_methods,                   ONLY: calculate_magnitude,&
                                               calculate_orthonormality,&
-                                              calculate_subspace_eigenvalues
+                                              calculate_subspace_eigenvalues,&
+                                              mo_output_rotation_allowed,&
+                                              rotate_mo_set_to_eigenvectors
    USE qs_mo_occupation,                ONLY: set_mo_occupation
    USE qs_mo_types,                     ONLY: allocate_mo_set,&
                                               deallocate_mo_set,&
@@ -366,10 +368,9 @@ CONTAINS
                   END IF
 
                   ! Update the eigenvalues of the occupied orbitals
-                  CALL calculate_subspace_eigenvalues(orbitals=mo_coeff, &
-                                                      ks_matrix=matrix_ks, &
-                                                      evals_arg=mo_eigenvalues, &
-                                                      co_rotate_dbcsr=mo_coeff_deriv)
+                  IF (mo_output_rotation_allowed(dft_control)) THEN
+                     CALL rotate_mo_set_to_eigenvectors(mo_set, matrix_ks, mo_coeff_deriv)
+                  END IF
                   CALL set_mo_occupation(mo_set=mo_set)
 
                   ! Retrieve the index of the last MO for which a printout is requested

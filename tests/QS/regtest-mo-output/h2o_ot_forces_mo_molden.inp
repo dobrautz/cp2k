@@ -1,0 +1,70 @@
+# OT forces with PRINT%MO EIGENVALUES and MO_MOLDEN must equal h2o_ot_forces (both rotate the orbitals and the OT derivatives)
+&GLOBAL
+  PRINT_LEVEL LOW
+  PROJECT h2o_ot_forces_mo_molden
+  RUN_TYPE ENERGY_FORCE
+&END GLOBAL
+
+&FORCE_EVAL
+  METHOD Quickstep
+  &DFT
+    &MGRID
+      CUTOFF 400
+    &END MGRID
+    &POISSON
+      PERIODIC NONE
+      POISSON_SOLVER ANALYTIC
+    &END POISSON
+    &PRINT
+      &MO
+        EIGENVALUES
+      &END MO
+      &MO_MOLDEN
+      &END MO_MOLDEN
+    &END PRINT
+    &QS
+      METHOD GPW
+    &END QS
+    &SCF
+      EPS_SCF 1.0E-8
+      MAX_SCF 50
+      &OT
+        MINIMIZER DIIS
+        PRECONDITIONER FULL_ALL
+      &END OT
+      &PRINT
+        &RESTART OFF
+        &END RESTART
+      &END PRINT
+    &END SCF
+    &XC
+      &HF 1.0
+      &END HF
+      &XC_FUNCTIONAL NONE
+      &END XC_FUNCTIONAL
+    &END XC
+  &END DFT
+  &PRINT
+    &FORCES ON
+    &END FORCES
+  &END PRINT
+  &SUBSYS
+    &CELL
+      ABC 6.0 6.0 6.0
+      PERIODIC NONE
+    &END CELL
+    &COORD
+      O 0.000  0.000  0.117
+      H 0.000  0.757 -0.469
+      H 0.000 -0.757 -0.469
+    &END COORD
+    &KIND H
+      BASIS_SET 6-31G*
+      POTENTIAL GTH-HF
+    &END KIND
+    &KIND O
+      BASIS_SET 6-31G*
+      POTENTIAL GTH-HF
+    &END KIND
+  &END SUBSYS
+&END FORCE_EVAL

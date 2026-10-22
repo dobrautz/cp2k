@@ -184,7 +184,9 @@ MODULE qs_scf_post_gpw
                                               qs_local_stress
    USE qs_mo_io,                        ONLY: write_dm_binary_restart
    USE qs_mo_methods,                   ONLY: calculate_subspace_eigenvalues,&
-                                              make_mo_eig
+                                              make_mo_eig,&
+                                              mo_output_rotation_allowed,&
+                                              rotate_mo_set_to_eigenvectors
    USE qs_mo_occupation,                ONLY: set_mo_occupation
    USE qs_mo_types,                     ONLY: get_mo_set,&
                                               mo_set_type
@@ -2294,13 +2296,11 @@ CONTAINS
                                                             explicit
       REAL(KIND=dp)                                      :: s_square, s_square_ideal, &
                                                             total_abs_spin_dens, total_spin_dens
-      REAL(KIND=dp), DIMENSION(:), POINTER               :: mo_eigenvalues
       TYPE(admm_type), POINTER                           :: admm_env
       TYPE(atomic_kind_type), DIMENSION(:), POINTER      :: atomic_kind_set
       TYPE(cell_type), POINTER                           :: cell
       TYPE(cp_1d_r_p_type), DIMENSION(:), POINTER        :: unoccupied_evals
       TYPE(cp_fm_type), DIMENSION(:), POINTER            :: unoccupied_orbs
-      TYPE(cp_fm_type), POINTER                          :: mo_coeff
       TYPE(cp_logger_type), POINTER                      :: logger
       TYPE(dbcsr_p_type), DIMENSION(:), POINTER          :: ks_rmpv, matrix_s
       TYPE(dbcsr_p_type), DIMENSION(:, :), POINTER       :: matrix_s_kp
@@ -2327,8 +2327,8 @@ CONTAINS
 
       CALL timeset(routineN, handle)
 
-      NULLIFY (cell, dft_control, pw_env, auxbas_pw_pool, pw_pools, mo_coeff, &
-               mo_coeff_deriv, mo_eigenvalues, mos, atomic_kind_set, qs_kind_set, &
+      NULLIFY (cell, dft_control, pw_env, auxbas_pw_pool, pw_pools, &
+               mo_coeff_deriv, mos, atomic_kind_set, qs_kind_set, &
                particle_set, rho, ks_rmpv, matrix_s, scf_control, dft_section, &
                molecule_set, input, particles, subsys, rho_r, unoccupied_orbs, &
                unoccupied_evals, casino_section, dos_section)
@@ -2441,23 +2441,20 @@ CONTAINS
                                      nlumo_required, nlumos)
                END IF
 
-               IF (do_dos .OR. do_projected_dos) THEN
+               IF ((do_dos .OR. do_projected_dos) .AND. &
+                   mo_output_rotation_allowed(dft_control)) THEN
                   DO ispin = 1, dft_control%nspins
                      ! With ADMM, temporarily modify the Kohn-Sham matrix while updating the
                      ! eigenvalues and rotating the occupied OT subspace.
                      IF (dft_control%do_admm) THEN
                         CALL admm_correct_for_eigenvalues(ispin, admm_env, ks_rmpv(ispin)%matrix)
                      END IF
-                     CALL get_mo_set(mo_set=mos(ispin), mo_coeff=mo_coeff, &
-                                     eigenvalues=mo_eigenvalues)
                      IF (ASSOCIATED(qs_env%mo_derivs)) THEN
                         mo_coeff_deriv => qs_env%mo_derivs(ispin)%matrix
                      ELSE
                         mo_coeff_deriv => NULL()
                      END IF
-                     CALL calculate_subspace_eigenvalues(mo_coeff, ks_rmpv(ispin)%matrix, mo_eigenvalues, &
-                                                         do_rotation=.TRUE., &
-                                                         co_rotate_dbcsr=mo_coeff_deriv)
+                     CALL rotate_mo_set_to_eigenvectors(mos(ispin), ks_rmpv(ispin)%matrix, mo_coeff_deriv)
                      CALL set_mo_occupation(mo_set=mos(ispin))
                      IF (dft_control%do_admm) THEN
                         CALL admm_uncorrect_for_eigenvalues(ispin, admm_env, ks_rmpv(ispin)%matrix)

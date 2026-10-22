@@ -49,9 +49,9 @@ MODULE molden_utils
    USE qs_kind_types,                   ONLY: get_qs_kind,&
                                               get_qs_kind_set,&
                                               qs_kind_type
-   USE qs_mo_methods,                   ONLY: calculate_subspace_eigenvalues
-   USE qs_mo_types,                     ONLY: get_mo_set,&
-                                              mo_set_type
+   USE qs_mo_methods,                   ONLY: mo_output_rotation_allowed,&
+                                              rotate_mo_set_to_eigenvectors
+   USE qs_mo_types,                     ONLY: mo_set_type
 #include "./base/base_uses.f90"
 
    IMPLICIT NONE
@@ -138,11 +138,9 @@ CONTAINS
                                                             write_pseudo
       REAL(KIND=dp)                                      :: expzet, prefac, scale_factor, zeff
       REAL(KIND=dp), ALLOCATABLE, DIMENSION(:, :)        :: cmatrix, smatrix
-      REAL(KIND=dp), DIMENSION(:), POINTER               :: mo_eigenvalues
       REAL(KIND=dp), DIMENSION(:, :), POINTER            :: zet
       REAL(KIND=dp), DIMENSION(:, :, :), POINTER         :: gcc
       TYPE(admm_type), POINTER                           :: admm_env
-      TYPE(cp_fm_type), POINTER                          :: mo_coeff
       TYPE(cp_logger_type), POINTER                      :: logger
       TYPE(dbcsr_p_type), DIMENSION(:), POINTER          :: ks
       TYPE(dbcsr_type), POINTER                          :: matrix_ks, mo_coeff_deriv
@@ -326,7 +324,12 @@ CONTAINS
 
             IF (PRESENT(qs_env) .AND. do_calc_energies) THEN
                CALL get_qs_env(qs_env, matrix_ks=ks, dft_control=dft_control)
+               do_calc_energies = mo_output_rotation_allowed(dft_control)
+            ELSE
+               do_calc_energies = .FALSE.
+            END IF
 
+            IF (do_calc_energies) THEN
                matrix_ks => ks(ispin)%matrix
 
                ! With ADMM, we have to modify the Kohn-Sham matrix
@@ -335,8 +338,6 @@ CONTAINS
                   CALL admm_correct_for_eigenvalues(ispin, admm_env, matrix_ks)
                END IF
 
-               CALL get_mo_set(mo_set=mos(ispin), mo_coeff=mo_coeff, eigenvalues=mo_eigenvalues)
-
                IF (ASSOCIATED(qs_env%mo_derivs)) THEN
                   mo_coeff_deriv => qs_env%mo_derivs(ispin)%matrix
                ELSE
@@ -344,10 +345,7 @@ CONTAINS
                END IF
 
                ! Update the eigenvalues of the occupied orbitals
-               CALL calculate_subspace_eigenvalues(orbitals=mo_coeff, &
-                                                   ks_matrix=matrix_ks, &
-                                                   evals_arg=mo_eigenvalues, &
-                                                   co_rotate_dbcsr=mo_coeff_deriv)
+               CALL rotate_mo_set_to_eigenvectors(mos(ispin), matrix_ks, mo_coeff_deriv)
 
                ! With ADMM, we have to undo the modification of the Kohn-Sham matrix
                IF (dft_control%do_admm) THEN

@@ -1,0 +1,21 @@
+# runs are executed in the same order as in this file
+# the second field tells which test should be run in order to compare with the last available output
+# e.g. 0 means do not compare anything, running is enough
+#      1 compares the last total energy in the file
+#      for details see cp2k/tools/do_regtest
+#
+# MO output after the SCF must not change the results. After OT, PRINT%MO and MO_MOLDEN rotate the
+# MOs and the OT derivatives into canonical orbitals; the forces must equal those without output
+# (h2o_ot_forces). ROKS orbitals are shared by both spins: MO_MOLDEN must not rotate them per spin,
+# the active space is the same with and without it.
+"h2o_ot_forces.inp"                     = [{matcher="E_total", tol=1e-11, ref=-16.81150876492856},
+                                           {matcher="Atomic_force_1_z", tol=1e-7, ref=-1.27900942E-02}]
+"h2o_ot_forces_mo_molden.inp"           = [{matcher="E_total", tol=1e-11, ref=-16.81150876492872},
+                                           {matcher="Atomic_force_1_z", tol=1e-7, ref=-1.27900942E-02}]
+"h2o_ot_forces_dos_molden.inp"          = [{matcher="E_total", tol=1e-11, ref=-16.81150876492855},
+                                           {matcher="Atomic_force_1_z", tol=1e-7, ref=-1.27900942E-02}]
+"ch2_roks_as.inp"                       = [{matcher="E_total", tol=1e-11, ref=-6.53019863407912},
+                                           {matcher="M092", tol=1e-8, ref=12.67624284}]
+"ch2_roks_as_molden.inp"                = [{matcher="E_total", tol=1e-11, ref=-6.53019863407913},
+                                           {matcher="M092", tol=1e-8, ref=12.67624284}]
+#EOF

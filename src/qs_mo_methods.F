@@ -16,7 +16,8 @@ MODULE qs_mo_methods
    USE admm_utils,                      ONLY: admm_correct_for_eigenvalues,&
                                               admm_uncorrect_for_eigenvalues
    USE cp_blacs_env,                    ONLY: cp_blacs_env_type
-   USE cp_control_types,                ONLY: hairy_probes_type
+   USE cp_control_types,                ONLY: dft_control_type,&
+                                              hairy_probes_type
    USE cp_dbcsr_api,                    ONLY: dbcsr_copy,&
                                               dbcsr_get_info,&
                                               dbcsr_init_p,&
@@ -65,7 +66,8 @@ MODULE qs_mo_methods
    PUBLIC :: make_basis_simple, make_basis_cholesky, make_basis_sv, make_basis_sm, &
              make_basis_lowdin, calculate_subspace_eigenvalues, &
              calculate_orthonormality, calculate_magnitude, make_mo_eig, &
-             calculate_orbital_fock_elements, make_mo_set_canonical
+             calculate_orbital_fock_elements, make_mo_set_canonical, rotate_mo_set_to_eigenvectors, &
+             mo_output_rotation_allowed
 
    INTERFACE calculate_subspace_eigenvalues
       MODULE PROCEDURE subspace_eigenvalues_ks_fm
@@ -836,19 +838,17 @@ CONTAINS
 
       CHARACTER(len=*), PARAMETER                        :: routineN = 'make_mo_eig'
 
-      INTEGER                                            :: handle, homo, ispin, nmo, output_unit
+      INTEGER                                            :: handle, homo, ispin, output_unit
       REAL(KIND=dp), DIMENSION(:), POINTER               :: mo_eigenvalues
-      TYPE(cp_fm_type), POINTER                          :: mo_coeff
       TYPE(dbcsr_type), POINTER                          :: mo_coeff_deriv
 
       CALL timeset(routineN, handle)
 
-      NULLIFY (mo_coeff_deriv, mo_coeff, mo_eigenvalues)
+      NULLIFY (mo_coeff_deriv, mo_eigenvalues)
       output_unit = cp_logger_get_default_io_unit()
 
       DO ispin = 1, nspins
-         CALL get_mo_set(mo_set=mos(ispin), mo_coeff=mo_coeff, &
-                         eigenvalues=mo_eigenvalues, homo=homo, nmo=nmo)
+         CALL get_mo_set(mo_set=mos(ispin), eigenvalues=mo_eigenvalues, homo=homo)
          IF (output_unit > 0) WRITE (output_unit, *) " "
          IF (output_unit > 0) WRITE (output_unit, *) " Eigenvalues of the occupied subspace spin ", ispin
          !      IF (homo /= nmo) THEN
@@ -869,9 +869,8 @@ CONTAINS
                CALL admm_correct_for_eigenvalues(ispin, admm_env, ks_rmpv(ispin)%matrix)
             END IF
 
-            CALL calculate_subspace_eigenvalues(mo_coeff, ks_rmpv(ispin)%matrix, mo_eigenvalues, &
-                                                scr=output_unit, ionode=output_unit > 0, do_rotation=.TRUE., &
-                                                co_rotate_dbcsr=mo_coeff_deriv)
+            CALL rotate_mo_set_to_eigenvectors(mos(ispin), ks_rmpv(ispin)%matrix, mo_coeff_deriv, &
+                                               ionode=output_unit > 0, scr=output_unit)
 
             ! If we do ADMM, we restore the original Kohn-Sham matrix
             IF (PRESENT(admm_env)) THEN
@@ -1061,5 +1060,47 @@ CONTAINS
       CALL timestop(handle)
 
    END SUBROUTINE make_mo_set_canonical
+
+! **************************************************************************************************
+!> \brief Rotates the MOs of an MO set into eigenvectors of the Kohn-Sham matrix within the space
+!>        they span and stores the eigenvalues (canonical orbitals and energies for MO output after
+!>        an OT SCF). The DBCSR copy of the coefficients (if used) and the orbital derivatives (if
+!>        given) are rotated consistently with the full-matrix coefficients. Later code that restores
+!>        the full-matrix coefficients from the DBCSR copy, or computes forces from the coefficients
+!>        and the derivatives (OT W matrix), therefore sees matching orbitals and derivatives.
+!> \param mo_set the MO set
+!> \param ks_matrix Kohn-Sham matrix
+!> \param mo_derivs derivatives of the energy with respect to the orbitals, rotated as well
+!> \param ionode if present (together with scr), the eigenvalues are written to unit scr
+!> \param scr ...
+! **************************************************************************************************
+   SUBROUTINE rotate_mo_set_to_eigenvectors(mo_set, ks_matrix, mo_derivs, ionode, scr)
+      ! only the targets of the pointer components (coefficients, eigenvalues) change
+      TYPE(mo_set_type), INTENT(IN)                      :: mo_set
+      TYPE(dbcsr_type), POINTER                          :: ks_matrix, mo_derivs
+      LOGICAL, INTENT(IN), OPTIONAL                      :: ionode
+      INTEGER, INTENT(IN), OPTIONAL                      :: scr
+
+      CALL calculate_subspace_eigenvalues(mo_set%mo_coeff, ks_matrix, evals_arg=mo_set%eigenvalues, &
+                                          ionode=ionode, scr=scr, do_rotation=.TRUE., &
+                                          co_rotate_dbcsr=mo_derivs)
+      IF (mo_set%use_mo_coeff_b) CALL copy_fm_to_dbcsr(mo_set%mo_coeff, mo_set%mo_coeff_b)
+
+   END SUBROUTINE rotate_mo_set_to_eigenvectors
+
+! **************************************************************************************************
+!> \brief Whether MO output after the SCF may rotate the MOs in place into eigenvectors of the
+!>        Kohn-Sham matrix of their spin (to obtain orbital energies, e.g. after OT). Not for ROKS,
+!>        whose orbitals are shared by both spins and are not eigenvectors of the spin Kohn-Sham
+!>        matrices.
+!> \param dft_control ...
+!> \return ...
+! **************************************************************************************************
+   LOGICAL FUNCTION mo_output_rotation_allowed(dft_control)
+      TYPE(dft_control_type), POINTER                    :: dft_control
+
+      mo_output_rotation_allowed = .NOT. dft_control%roks
+
+   END FUNCTION mo_output_rotation_allowed
 
 END MODULE qs_mo_methods
