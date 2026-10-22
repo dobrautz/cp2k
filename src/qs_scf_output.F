@@ -368,7 +368,7 @@ CONTAINS
                   END IF
 
                   ! Update the eigenvalues of the occupied orbitals
-                  IF (mo_output_rotation_allowed(dft_control)) THEN
+                  IF (mo_output_rotation_allowed(dft_control, scf_control)) THEN
                      CALL rotate_mo_set_to_eigenvectors(mo_set, matrix_ks, mo_coeff_deriv)
                   END IF
                   CALL set_mo_occupation(mo_set=mo_set)

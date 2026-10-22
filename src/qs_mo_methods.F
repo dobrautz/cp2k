@@ -67,7 +67,7 @@ MODULE qs_mo_methods
              make_basis_lowdin, calculate_subspace_eigenvalues, &
              calculate_orthonormality, calculate_magnitude, make_mo_eig, &
              calculate_orbital_fock_elements, make_mo_set_canonical, rotate_mo_set_to_eigenvectors, &
-             mo_output_rotation_allowed
+             mo_output_rotation_allowed, calculate_mo_fingerprint
 
    INTERFACE calculate_subspace_eigenvalues
       MODULE PROCEDURE subspace_eigenvalues_ks_fm
@@ -856,7 +856,7 @@ CONTAINS
          !      END IF
          IF (output_unit > 0) WRITE (output_unit, *) "---------------------------------------------"
 
-         IF (scf_control%use_ot) THEN
+         IF (scf_control%use_ot .AND. .NOT. scf_control%consistent_mo_output) THEN
             ! Also rotate the OT derivs, since they are needed for force calculations
             IF (ASSOCIATED(mo_derivs)) THEN
                mo_coeff_deriv => mo_derivs(ispin)%matrix
@@ -877,6 +877,7 @@ CONTAINS
                CALL admm_uncorrect_for_eigenvalues(ispin, admm_env, ks_rmpv(ispin)%matrix)
             END IF
          ELSE
+            ! diagonalization, or OT orbitals canonicalized once after the SCF (CONSISTENT_MO_OUTPUT)
             IF (output_unit > 0) WRITE (output_unit, '(4(1X,1F16.8))') mo_eigenvalues(1:homo)
          END IF
          IF (.NOT. scf_control%diagonalization%mom) THEN
@@ -959,15 +960,16 @@ CONTAINS
 
 ! **************************************************************************************************
 !> \brief Rotates the orbitals of an MO set into canonical orbitals (eigenvectors of the Fock
-!>        matrix in the space of the orbitals), separately within the occupied and within the
-!>        unoccupied orbitals, so that the occupied space (the determinant) is unchanged.
+!>        matrix in the space of the orbitals), separately within each block of consecutive
+!>        orbitals with the same occupation number (e.g. occupied and unoccupied orbitals), so
+!>        that the density matrix is unchanged; fractionally occupied orbitals are only mixed
+!>        with orbitals of the same occupation.
 !>        The orbitals are rotated in place: the eigenvalues, the DBCSR copy of the coefficients
 !>        (if used) and the orbital derivatives (if given) are rotated consistently, C' = C U and
 !>        D' = D U. Nothing is done if the orbitals are already canonical, i.e. if no
 !>        off-diagonal Fock matrix element exceeds eps_canonical; orbitals of a converged
 !>        diagonalization SCF are therefore never changed.
-!>        Requires integer occupations (0 or the maximum occupation); fractionally occupied
-!>        orbitals and ROKS orbitals must not be mixed this way.
+!>        ROKS orbitals are shared by both spins and must not be rotated per spin this way.
 !> \param mo_set the MO set (e.g. the SCF orbitals after an OT optimization)
 !> \param ks_matrix Kohn-Sham or Fock matrix
 !> \param eps_canonical largest off-diagonal Fock matrix element accepted as canonical
@@ -986,8 +988,7 @@ CONTAINS
       CHARACTER(len=*), PARAMETER :: routineN = 'make_mo_set_canonical'
       REAL(KIND=dp), PARAMETER                           :: eps_occ = 1.0E-10_dp
 
-      INTEGER                                            :: first, handle, i, iblock, n, nmo, nocc, &
-                                                            nrow_global
+      INTEGER                                            :: first, handle, n, nmo, nrow_global
       LOGICAL                                            :: do_derivs
       REAL(KIND=dp), ALLOCATABLE, DIMENSION(:)           :: energies
       TYPE(cp_fm_struct_type), POINTER                   :: fm_struct_tmp
@@ -1000,33 +1001,28 @@ CONTAINS
       IF (mo_set%use_mo_coeff_b) CALL copy_dbcsr_to_fm(mo_set%mo_coeff_b, mo_set%mo_coeff)
       ALLOCATE (energies(nmo))
       CALL calculate_orbital_fock_elements(mo_set%mo_coeff, ks_matrix, energies, max_offdiag)
-      DEALLOCATE (energies)
 
       IF (max_offdiag > eps_canonical) THEN
-         DO i = 1, nmo
-            IF (ABS(mo_set%occupation_numbers(i)) > eps_occ .AND. &
-                ABS(mo_set%occupation_numbers(i) - mo_set%maxocc) > eps_occ) THEN
-               CPABORT("Canonicalization of orbitals with fractional occupations is not possible")
-            END IF
-         END DO
          do_derivs = .FALSE.
          IF (PRESENT(mo_derivs)) do_derivs = ASSOCIATED(mo_derivs)
-         ! occupied orbitals: those with nonzero occupation, they come first
-         nocc = COUNT(mo_set%occupation_numbers(1:nmo) > eps_occ)
          CALL cp_fm_get_info(matrix=mo_set%mo_coeff, nrow_global=nrow_global)
          IF (do_derivs) THEN
             CALL cp_fm_create(derivs, mo_set%mo_coeff%matrix_struct, name="orbital derivatives")
             CALL copy_dbcsr_to_fm(mo_derivs, derivs)
          END IF
-         DO iblock = 1, 2
-            IF (iblock == 1) THEN
-               first = 1
-               n = nocc
-            ELSE
-               first = nocc + 1
-               n = nmo - nocc
+         first = 1
+         DO WHILE (first <= nmo)
+            ! block of consecutive orbitals with the same occupation number
+            n = 1
+            DO WHILE (first + n <= nmo)
+               IF (ABS(mo_set%occupation_numbers(first + n) - mo_set%occupation_numbers(first)) > eps_occ) EXIT
+               n = n + 1
+            END DO
+            IF (n == 1) THEN
+               mo_set%eigenvalues(first) = energies(first)
+               first = first + 1
+               CYCLE
             END IF
-            IF (n <= 0) CYCLE
             NULLIFY (fm_struct_tmp)
             CALL cp_fm_struct_create(fm_struct_tmp, nrow_global=nrow_global, ncol_global=n, &
                                      template_fmstruct=mo_set%mo_coeff%matrix_struct)
@@ -1048,6 +1044,7 @@ CONTAINS
             CALL cp_fm_struct_release(fm_struct_tmp)
             CALL cp_fm_to_fm(block_coeff, mo_set%mo_coeff, n, 1, first)
             CALL cp_fm_release(block_coeff)
+            first = first + n
          END DO
          IF (do_derivs) THEN
             CALL copy_fm_to_dbcsr(derivs, mo_derivs)
@@ -1056,6 +1053,7 @@ CONTAINS
          IF (mo_set%use_mo_coeff_b) CALL copy_fm_to_dbcsr(mo_set%mo_coeff, mo_set%mo_coeff_b)
          rotated = .TRUE.
       END IF
+      DEALLOCATE (energies)
 
       CALL timestop(handle)
 
@@ -1092,15 +1090,45 @@ CONTAINS
 !> \brief Whether MO output after the SCF may rotate the MOs in place into eigenvectors of the
 !>        Kohn-Sham matrix of their spin (to obtain orbital energies, e.g. after OT). Not for ROKS,
 !>        whose orbitals are shared by both spins and are not eigenvectors of the spin Kohn-Sham
-!>        matrices.
+!>        matrices, and not with SCF%CONSISTENT_MO_OUTPUT, where the MOs are made canonical once
+!>        after the SCF and all output uses them unchanged.
 !> \param dft_control ...
+!> \param scf_control ...
 !> \return ...
 ! **************************************************************************************************
-   LOGICAL FUNCTION mo_output_rotation_allowed(dft_control)
+   LOGICAL FUNCTION mo_output_rotation_allowed(dft_control, scf_control)
       TYPE(dft_control_type), POINTER                    :: dft_control
+      TYPE(scf_control_type), POINTER                    :: scf_control
 
-      mo_output_rotation_allowed = .NOT. dft_control%roks
+      mo_output_rotation_allowed = .NOT. (dft_control%roks .OR. scf_control%consistent_mo_output)
 
    END FUNCTION mo_output_rotation_allowed
+
+! **************************************************************************************************
+!> \brief A fingerprint of each MO, f_i = sum_mu sin(mu) C_mu,i, which changes with the sign of an
+!>        orbital and with rotations among orbitals. Used to check that the MOs of different outputs
+!>        after the SCF are the same (SCF%CONSISTENT_MO_OUTPUT).
+!> \param mo_coeff MO coefficients
+!> \param fingerprint one value per MO (column)
+! **************************************************************************************************
+   SUBROUTINE calculate_mo_fingerprint(mo_coeff, fingerprint)
+      TYPE(cp_fm_type), INTENT(IN)                       :: mo_coeff
+      REAL(KIND=dp), DIMENSION(:), INTENT(OUT)           :: fingerprint
+
+      INTEGER                                            :: i, j, ncol_local, nrow_local
+      INTEGER, DIMENSION(:), POINTER                     :: col_indices, row_indices
+
+      CALL cp_fm_get_info(mo_coeff, nrow_local=nrow_local, ncol_local=ncol_local, &
+                          row_indices=row_indices, col_indices=col_indices)
+      fingerprint = 0.0_dp
+      DO j = 1, ncol_local
+         DO i = 1, nrow_local
+            fingerprint(col_indices(j)) = fingerprint(col_indices(j)) + &
+                                          SIN(REAL(row_indices(i), KIND=dp))*mo_coeff%local_data(i, j)
+         END DO
+      END DO
+      CALL mo_coeff%matrix_struct%para_env%sum(fingerprint)
+
+   END SUBROUTINE calculate_mo_fingerprint
 
 END MODULE qs_mo_methods

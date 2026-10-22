@@ -1,0 +1,83 @@
+# CONSISTENT_MO_OUTPUT with degenerate orbitals (pi_u, pi_g) after diagonalization: MO, DOS and
+# MO_MOLDEN must not rotate the MOs, the active space must see the same orbitals (change 0)
+&GLOBAL
+  PRINT_LEVEL LOW
+  PROJECT n2_diag_consistent_degenerate
+  RUN_TYPE ENERGY
+&END GLOBAL
+
+&FORCE_EVAL
+  METHOD Quickstep
+  &DFT
+    &ACTIVE_SPACE
+      ACTIVE_ELECTRONS 4
+      ACTIVE_ORBITALS 4
+      ORBITAL_SELECTION CANONICAL
+      &ERI
+        METHOD FULL_GPW
+        PERIODICITY 0 0 0
+      &END ERI
+      &ERI_GPW
+        CUTOFF 300
+      &END ERI_GPW
+      &FCIDUMP
+        FILENAME __STD_OUT__
+      &END FCIDUMP
+    &END ACTIVE_SPACE
+    &MGRID
+      CUTOFF 300
+    &END MGRID
+    &POISSON
+      PERIODIC NONE
+      POISSON_SOLVER ANALYTIC
+    &END POISSON
+    &PRINT
+      &DOS
+      &END DOS
+      &MO
+        EIGENVALUES
+      &END MO
+      &MO_MOLDEN
+      &END MO_MOLDEN
+    &END PRINT
+    &QS
+      METHOD GPW
+    &END QS
+    &SCF
+      ADDED_MOS 6
+      CONSISTENT_MO_OUTPUT
+      EPS_SCF 1.0E-8
+      MAX_SCF 50
+      &DIAGONALIZATION
+      &END DIAGONALIZATION
+      &MIXING
+        ALPHA 0.5
+        METHOD DIRECT_P_MIXING
+      &END MIXING
+      &PRINT
+        &RESTART OFF
+        &END RESTART
+      &END PRINT
+    &END SCF
+    &XC
+      &HF 1.0
+      &END HF
+      &XC_FUNCTIONAL NONE
+      &END XC_FUNCTIONAL
+    &END XC
+  &END DFT
+  &SUBSYS
+    &CELL
+      ABC 6.0 6.0 6.0
+      PERIODIC NONE
+    &END CELL
+    &COORD
+      N 0.000  0.000  0.560
+      N 0.000  0.000 -0.560
+    &END COORD
+    &KIND N
+      BASIS_SET 6-31G*
+      POTENTIAL GTH-HF
+    &END KIND
+  &END SUBSYS
+&END FORCE_EVAL

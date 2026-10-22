@@ -146,6 +146,20 @@ CONTAINS
       CALL section_add_keyword(section, keyword)
       CALL keyword_release(keyword)
 
+      CALL keyword_create(keyword, __LOCATION__, name="CONSISTENT_MO_OUTPUT", &
+                          description="Rotate the MOs once after the SCF into canonical orbitals "// &
+                          "(eigenvectors of the Kohn-Sham matrix within each set of equally occupied "// &
+                          "orbitals, which leaves the density unchanged) and keep them unchanged afterwards. "// &
+                          "All MO output (MO, MO_MOLDEN, CASINO, TREXIO, DOS, MO_CUBES) and the "// &
+                          "ACTIVE_SPACE module then use the same orbitals, with the same signs and the same "// &
+                          "choice within degenerate sets. Without this keyword, several of these outputs "// &
+                          "diagonalize the Kohn-Sham matrix again in the space of the MOs, which can flip "// &
+                          "signs and mix degenerate orbitals between files. Orbitals of a converged "// &
+                          "diagonalization are not rotated; ROKS orbitals and k-point MOs are never rotated.", &
+                          usage="CONSISTENT_MO_OUTPUT", default_l_val=.FALSE., lone_keyword_l_val=.TRUE.)
+      CALL section_add_keyword(section, keyword)
+      CALL keyword_release(keyword)
+
       CALL keyword_create(keyword, __LOCATION__, name="MAX_SCF", &
                           description="Maximum number of inner SCF iterations for one electronic optimization.", &
                           usage="MAX_SCF 200", default_i_val=50)

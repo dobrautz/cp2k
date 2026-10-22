@@ -183,12 +183,17 @@ MODULE qs_scf_post_gpw
    USE qs_local_properties,             ONLY: qs_local_energy,&
                                               qs_local_stress
    USE qs_mo_io,                        ONLY: write_dm_binary_restart
-   USE qs_mo_methods,                   ONLY: calculate_subspace_eigenvalues,&
+   USE qs_mo_methods,                   ONLY: calculate_mo_fingerprint,&
+                                              calculate_subspace_eigenvalues,&
                                               make_mo_eig,&
+                                              make_mo_set_canonical,&
                                               mo_output_rotation_allowed,&
                                               rotate_mo_set_to_eigenvectors
    USE qs_mo_occupation,                ONLY: set_mo_occupation
-   USE qs_mo_types,                     ONLY: get_mo_set,&
+   USE qs_mo_types,                     ONLY: allocate_mo_set,&
+                                              deallocate_mo_set,&
+                                              get_mo_set,&
+                                              init_mo_set,&
                                               mo_set_type
    USE qs_moments,                      ONLY: qs_moment_berry_phase,&
                                               qs_moment_kpoints,&
@@ -792,6 +797,8 @@ CONTAINS
          ! In MP2 case update the Hartree potential
          CALL update_hartree_with_mp2(rho, qs_env)
       END IF
+
+      IF (scf_control%consistent_mo_output) CALL canonicalize_mos_for_output(qs_env)
 
       CALL write_available_results(qs_env, scf_env)
 
@@ -2250,6 +2257,136 @@ CONTAINS
    END SUBROUTINE qs_scf_post_epr
 
 ! **************************************************************************************************
+!> \brief Rotates the MOs once after the SCF into canonical orbitals, separately within each block
+!>        of equally occupied orbitals (SCF%CONSISTENT_MO_OUTPUT). The DBCSR copy of the coefficients
+!>        and the OT orbital derivatives are rotated together with the orbitals. MO output and the
+!>        active-space module then use these orbitals without rotating them again, so that all files
+!>        contain the same orbitals. Orbitals that are already canonical (converged diagonalization)
+!>        are not changed. ROKS orbitals (shared by both spins) and k-point MOs are not rotated.
+!> \param qs_env ...
+! **************************************************************************************************
+   SUBROUTINE canonicalize_mos_for_output(qs_env)
+      TYPE(qs_environment_type), POINTER                 :: qs_env
+
+      CHARACTER(len=*), PARAMETER :: routineN = 'canonicalize_mos_for_output'
+
+      INTEGER                                            :: handle, ispin, output_unit
+      LOGICAL                                            :: do_kpoints, rotated
+      REAL(KIND=dp)                                      :: eps_canonical, max_offdiag
+      TYPE(admm_type), POINTER                           :: admm_env
+      TYPE(dbcsr_p_type), DIMENSION(:), POINTER          :: ks_rmpv, mo_derivs
+      TYPE(dbcsr_type), POINTER                          :: mo_deriv
+      TYPE(dft_control_type), POINTER                    :: dft_control
+      TYPE(mo_set_type), DIMENSION(:), POINTER           :: mos
+      TYPE(scf_control_type), POINTER                    :: scf_control
+
+      CALL timeset(routineN, handle)
+
+      ! virtual orbitals and the fingerprint kept from an earlier SCF do not belong to the current MOs
+      CALL release_virtual_mos(qs_env)
+      IF (ALLOCATED(qs_env%mo_fingerprint)) DEALLOCATE (qs_env%mo_fingerprint)
+
+      NULLIFY (admm_env, dft_control, ks_rmpv, mo_derivs, mos, scf_control)
+      CALL get_qs_env(qs_env, dft_control=dft_control, scf_control=scf_control, do_kpoints=do_kpoints, &
+                      mos=mos, matrix_ks=ks_rmpv, mo_derivs=mo_derivs)
+      output_unit = cp_logger_get_default_io_unit()
+
+      IF (do_kpoints .OR. dft_control%roks) THEN
+         IF (output_unit > 0) THEN
+            WRITE (output_unit, '(/,T2,A)') "CONSISTENT_MO_OUTPUT| ROKS or k-point MOs are used as they are"
+         END IF
+      ELSE
+         IF (dft_control%do_admm) CALL get_qs_env(qs_env, admm_env=admm_env)
+         ! a converged diagonalization leaves off-diagonal elements of the order of EPS_SCF
+         eps_canonical = MAX(1.0E-4_dp, 100.0_dp*scf_control%eps_scf)
+         DO ispin = 1, dft_control%nspins
+            NULLIFY (mo_deriv)
+            IF (ASSOCIATED(mo_derivs)) mo_deriv => mo_derivs(ispin)%matrix
+            IF (dft_control%do_admm) THEN
+               CALL admm_correct_for_eigenvalues(ispin, admm_env, ks_rmpv(ispin)%matrix)
+            END IF
+            CALL make_mo_set_canonical(mos(ispin), ks_rmpv(ispin)%matrix, eps_canonical, rotated, &
+                                       max_offdiag, mo_deriv)
+            IF (dft_control%do_admm) THEN
+               CALL admm_uncorrect_for_eigenvalues(ispin, admm_env, ks_rmpv(ispin)%matrix)
+            END IF
+            IF (output_unit > 0) THEN
+               IF (rotated) THEN
+                  WRITE (output_unit, '(/,T2,A,I0,A,ES9.2,A)') "CONSISTENT_MO_OUTPUT| MOs of spin ", ispin, &
+                     " rotated into canonical orbitals (max |<i|F|j>| was ", max_offdiag, ")"
+               ELSE
+                  WRITE (output_unit, '(/,T2,A,I0,A,ES9.2,A)') "CONSISTENT_MO_OUTPUT| MOs of spin ", ispin, &
+                     " are canonical (max |<i|F|j>| = ", max_offdiag, ")"
+               END IF
+            END IF
+         END DO
+         ! fingerprint of the orbitals used by all MO output, checked by the active-space module
+         ALLOCATE (qs_env%mo_fingerprint(MAXVAL(mos(:)%nmo), dft_control%nspins))
+         qs_env%mo_fingerprint(:, :) = 0.0_dp
+         DO ispin = 1, dft_control%nspins
+            CALL calculate_mo_fingerprint(mos(ispin)%mo_coeff, qs_env%mo_fingerprint(1:mos(ispin)%nmo, ispin))
+         END DO
+      END IF
+
+      CALL timestop(handle)
+
+   END SUBROUTINE canonicalize_mos_for_output
+
+! **************************************************************************************************
+!> \brief Keeps a copy of the virtual orbitals that were computed for MO output after an OT SCF
+!>        (MO_MOLDEN, DOS) in qs_env%mos_virtual (SCF%CONSISTENT_MO_OUTPUT). The active-space
+!>        module uses them instead of computing its own, so that both contain the same orbitals.
+!> \param qs_env ...
+!> \param mos the SCF MOs (for the maximum occupation)
+!> \param unoccupied_orbs virtual orbitals for each spin
+!> \param unoccupied_evals their eigenvalues
+! **************************************************************************************************
+   SUBROUTINE store_virtual_mos(qs_env, mos, unoccupied_orbs, unoccupied_evals)
+      TYPE(qs_environment_type), POINTER                 :: qs_env
+      TYPE(mo_set_type), DIMENSION(:), INTENT(IN)        :: mos
+      TYPE(cp_fm_type), DIMENSION(:), INTENT(IN)         :: unoccupied_orbs
+      TYPE(cp_1d_r_p_type), DIMENSION(:), INTENT(IN)     :: unoccupied_evals
+
+      INTEGER                                            :: ispin, nao, nmo
+      TYPE(mo_set_type), DIMENSION(:), POINTER           :: mos_virtual
+
+      CALL release_virtual_mos(qs_env)
+      ALLOCATE (mos_virtual(SIZE(unoccupied_orbs)))
+      DO ispin = 1, SIZE(unoccupied_orbs)
+         CALL cp_fm_get_info(unoccupied_orbs(ispin), nrow_global=nao, ncol_global=nmo)
+         CALL allocate_mo_set(mos_virtual(ispin), nao, nmo, 0, 0.0_dp, mos(ispin)%maxocc, 0.0_dp)
+         CALL init_mo_set(mos_virtual(ispin), fm_ref=unoccupied_orbs(ispin), name="virtual MOs")
+         CALL cp_fm_to_fm(unoccupied_orbs(ispin), mos_virtual(ispin)%mo_coeff)
+         mos_virtual(ispin)%eigenvalues(1:nmo) = unoccupied_evals(ispin)%array(1:nmo)
+         mos_virtual(ispin)%occupation_numbers(1:nmo) = 0.0_dp
+      END DO
+      CALL set_qs_env(qs_env, mos_virtual=mos_virtual)
+
+   END SUBROUTINE store_virtual_mos
+
+! **************************************************************************************************
+!> \brief Releases the virtual orbitals kept from the MO output of an earlier SCF.
+!> \param qs_env ...
+! **************************************************************************************************
+   SUBROUTINE release_virtual_mos(qs_env)
+      TYPE(qs_environment_type), POINTER                 :: qs_env
+
+      INTEGER                                            :: ispin
+      TYPE(mo_set_type), DIMENSION(:), POINTER           :: mos_virtual
+
+      NULLIFY (mos_virtual)
+      CALL get_qs_env(qs_env, mos_virtual=mos_virtual)
+      IF (ASSOCIATED(mos_virtual)) THEN
+         DO ispin = 1, SIZE(mos_virtual)
+            CALL deallocate_mo_set(mos_virtual(ispin))
+         END DO
+         DEALLOCATE (mos_virtual)
+         CALL set_qs_env(qs_env, mos_virtual=mos_virtual)
+      END IF
+
+   END SUBROUTINE release_virtual_mos
+
+! **************************************************************************************************
 !> \brief Interface routine to trigger writing of results available from normal
 !>        SCF. Can write MO-dependent and MO free results (needed for call from
 !>        the linear scaling code)
@@ -2442,7 +2579,7 @@ CONTAINS
                END IF
 
                IF ((do_dos .OR. do_projected_dos) .AND. &
-                   mo_output_rotation_allowed(dft_control)) THEN
+                   mo_output_rotation_allowed(dft_control, scf_control)) THEN
                   DO ispin = 1, dft_control%nspins
                      ! With ADMM, temporarily modify the Kohn-Sham matrix while updating the
                      ! eigenvalues and rotating the occupied OT subspace.
@@ -2536,6 +2673,10 @@ CONTAINS
             END IF
          END IF
          IF (ASSOCIATED(unoccupied_orbs)) THEN
+            ! keep the virtual orbitals of the MO output for the active-space module
+            IF (scf_control%consistent_mo_output) THEN
+               CALL store_virtual_mos(qs_env, mos, unoccupied_orbs, unoccupied_evals)
+            END IF
             DO ispin = 1, dft_control%nspins
                DEALLOCATE (unoccupied_evals(ispin)%array)
                CALL cp_fm_release(unoccupied_orbs(ispin))

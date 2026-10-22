@@ -149,7 +149,8 @@ MODULE qs_active_space_methods
    USE qs_ks_types, ONLY: qs_ks_did_change, &
                           qs_ks_env_type, set_ks_env
    USE qs_mo_io, ONLY: write_mo_set_to_output_unit
-   USE qs_mo_methods, ONLY: calculate_orbital_fock_elements, &
+   USE qs_mo_methods, ONLY: calculate_mo_fingerprint, &
+                            calculate_orbital_fock_elements, &
                             calculate_subspace_eigenvalues, &
                             make_mo_set_canonical
    USE qs_mo_types, ONLY: allocate_mo_set, &
@@ -263,7 +264,6 @@ CONTAINS
       TYPE(mo_set_type), POINTER                         :: mo_set, mo_set_active, mo_set_inactive
       TYPE(mp_para_env_type), POINTER                    :: para_env
       TYPE(particle_type), DIMENSION(:), POINTER         :: particle_set
-      TYPE(preconditioner_type), POINTER                 :: local_preconditioner
       TYPE(qcschema_type)                                :: qcschema_env
       TYPE(qs_energy_type), POINTER                      :: energy
       TYPE(qs_kind_type), DIMENSION(:), POINTER          :: qs_kind_set
@@ -564,32 +564,9 @@ CONTAINS
 
                NULLIFY (evals_virtual)
                ALLOCATE (evals_virtual(nmo_virtual))
-
-               CALL cp_fm_get_info(mo_ref, context=context, para_env=para_env, &
-                                   nrow_global=nrow_global)
-
-               CALL cp_fm_struct_create(fm_struct_tmp, para_env=para_env, context=context, &
-                                        nrow_global=nrow_global, ncol_global=nmo_virtual)
-               CALL cp_fm_create(mo_virtual, fm_struct_tmp, name="virtual")
-               CALL cp_fm_struct_release(fm_struct_tmp)
-               CALL cp_fm_init_random(mo_virtual, nmo_virtual)
-
                ! compute missing virtual MOs
-               CALL virtual_orbital_preconditioner(local_preconditioner, mos(ispin), ks_matrix(ispin)%matrix, &
-                                                   s_matrix(1)%matrix, nmo_virtual, para_env, context)
-               CALL ot_eigensolver(matrix_h=ks_matrix(ispin)%matrix, matrix_s=s_matrix(1)%matrix, &
-                                   matrix_c_fm=mo_virtual, matrix_orthogonal_space_fm=mo_ref, &
-                                   eps_gradient=scf_control%eps_lumos, &
-                                   preconditioner=local_preconditioner, &
-                                   iter_max=scf_control%max_iter_lumos, &
-                                   size_ortho_space=nmo_available)
-               IF (ASSOCIATED(local_preconditioner)) THEN
-                  CALL destroy_preconditioner(local_preconditioner)
-                  DEALLOCATE (local_preconditioner)
-               END IF
-
-               ! get the eigenvalues
-               CALL calculate_subspace_eigenvalues(mo_virtual, ks_matrix(ispin)%matrix, evals_virtual)
+               CALL get_virtual_orbitals(qs_env, mos(ispin), ks_matrix(ispin)%matrix, s_matrix(1)%matrix, &
+                                         ispin, mo_virtual, evals_virtual, iw)
 
                ! orbital energies <i|F|i> of the SCF orbitals, which are used unchanged
                CALL calculate_orbital_fock_elements(mo_ref, ks_matrix(ispin)%matrix, &
@@ -762,31 +739,9 @@ CONTAINS
 
                NULLIFY (evals_virtual)
                ALLOCATE (evals_virtual(nmo_virtual))
-
-               CALL cp_fm_get_info(mo_ref, context=context, para_env=para_env, &
-                                   nrow_global=nrow_global)
-
-               CALL cp_fm_struct_create(fm_struct_tmp, para_env=para_env, context=context, &
-                                        nrow_global=nrow_global, ncol_global=nmo_virtual)
-               CALL cp_fm_create(mo_virtual, fm_struct_tmp, name="virtual")
-               CALL cp_fm_struct_release(fm_struct_tmp)
-               CALL cp_fm_init_random(mo_virtual, nmo_virtual)
-
-               CALL virtual_orbital_preconditioner(local_preconditioner, mos(ispin), ks_matrix(ispin)%matrix, &
-                                                   s_matrix(1)%matrix, nmo_virtual, para_env, context)
-               CALL ot_eigensolver(matrix_h=ks_matrix(ispin)%matrix, matrix_s=s_matrix(1)%matrix, &
-                                   matrix_c_fm=mo_virtual, matrix_orthogonal_space_fm=mo_ref, &
-                                   eps_gradient=scf_control%eps_lumos, &
-                                   preconditioner=local_preconditioner, &
-                                   iter_max=scf_control%max_iter_lumos, &
-                                   size_ortho_space=nmo_available)
-               IF (ASSOCIATED(local_preconditioner)) THEN
-                  CALL destroy_preconditioner(local_preconditioner)
-                  DEALLOCATE (local_preconditioner)
-               END IF
-
-               CALL calculate_subspace_eigenvalues(mo_virtual, ks_matrix(ispin)%matrix, &
-                                                   evals_virtual)
+               ! compute missing virtual MOs
+               CALL get_virtual_orbitals(qs_env, mos(ispin), ks_matrix(ispin)%matrix, s_matrix(1)%matrix, &
+                                         ispin, mo_virtual, evals_virtual, iw)
 
                ! orbital energies <i|F|i> of the SCF orbitals, which are used unchanged
                CALL calculate_orbital_fock_elements(mo_ref, ks_matrix(ispin)%matrix, &
@@ -1250,8 +1205,8 @@ CONTAINS
       INTEGER, INTENT(IN)                                :: iw
 
       LOGICAL                                            :: on_the_fly_loc, rotated
-      REAL(KIND=dp)                                      :: eps_canonical, max_offdiag
-      REAL(KIND=dp), ALLOCATABLE, DIMENSION(:)           :: energies
+      REAL(KIND=dp)                                      :: eps_canonical, max_change, max_offdiag
+      REAL(KIND=dp), ALLOCATABLE, DIMENSION(:)           :: energies, fingerprint
       TYPE(dbcsr_p_type), DIMENSION(:), POINTER          :: mo_derivs
       TYPE(dbcsr_type), POINTER                          :: mo_deriv
       TYPE(dft_control_type), POINTER                    :: dft_control
@@ -1265,10 +1220,26 @@ CONTAINS
       CALL get_qs_env(qs_env, dft_control=dft_control, scf_control=scf_control, input=input, &
                       mo_derivs=mo_derivs)
       IF (dft_control%roks) RETURN
+      IF (mo_set%use_mo_coeff_b) CALL copy_dbcsr_to_fm(mo_set%mo_coeff_b, mo_set%mo_coeff)
+
+      ! with SCF%CONSISTENT_MO_OUTPUT, the orbitals must still be those of the MO output after the SCF
+      IF (scf_control%consistent_mo_output .AND. ALLOCATED(qs_env%mo_fingerprint)) THEN
+         ALLOCATE (fingerprint(mo_set%nmo))
+         CALL calculate_mo_fingerprint(mo_set%mo_coeff, fingerprint)
+         max_change = MAXVAL(ABS(fingerprint(:) - qs_env%mo_fingerprint(1:mo_set%nmo, ispin)))
+         DEALLOCATE (fingerprint)
+         IF (iw > 0) THEN
+            WRITE (iw, '(/,T3,A,I0,A,ES10.3)') "CONSISTENT_MO_OUTPUT| Change of the MOs of spin ", &
+               ispin, " since the MO output: ", max_change
+         END IF
+         IF (max_change > 1.0E-10_dp) THEN
+            CALL cp_warn(__LOCATION__, &
+                         "The MOs changed after their canonicalization for MO output (CONSISTENT_MO_OUTPUT)")
+         END IF
+      END IF
 
       ! a converged diagonalization SCF leaves off-diagonal elements of the order of EPS_SCF
       eps_canonical = MAX(1.0E-4_dp, 100.0_dp*scf_control%eps_scf)
-      IF (mo_set%use_mo_coeff_b) CALL copy_dbcsr_to_fm(mo_set%mo_coeff_b, mo_set%mo_coeff)
       ALLOCATE (energies(mo_set%nmo))
       CALL calculate_orbital_fock_elements(mo_set%mo_coeff, ks_matrix, energies, max_offdiag)
       DEALLOCATE (energies)
@@ -1334,6 +1305,111 @@ CONTAINS
                                mo_set=mo_set, energy_gap=0.2_dp)
 
    END SUBROUTINE virtual_orbital_preconditioner
+
+! **************************************************************************************************
+!> \brief Virtual orbitals beyond those available from the SCF, as canonical orbitals with their
+!>        energies. With SCF%CONSISTENT_MO_OUTPUT, the virtual orbitals computed for the MO output
+!>        after an OT SCF (e.g. MO_MOLDEN with NLUMO) are used first, so that the output and the
+!>        active space contain the same orbitals; only the remaining ones are computed here, with the
+!>        OT eigensolver orthogonal to the SCF orbitals and to the virtual orbitals already used.
+!> \param qs_env ...
+!> \param mo_set the SCF orbitals of one spin
+!> \param ks_matrix Kohn-Sham matrix of that spin
+!> \param s_matrix overlap matrix
+!> \param ispin ...
+!> \param mo_virtual the virtual orbitals, SIZE(evals_virtual) columns (created here)
+!> \param evals_virtual their orbital energies
+!> \param iw output unit (if > 0)
+! **************************************************************************************************
+   SUBROUTINE get_virtual_orbitals(qs_env, mo_set, ks_matrix, s_matrix, ispin, mo_virtual, evals_virtual, iw)
+      TYPE(qs_environment_type), POINTER                 :: qs_env
+      TYPE(mo_set_type), INTENT(IN)                      :: mo_set
+      TYPE(dbcsr_type), POINTER                          :: ks_matrix, s_matrix
+      INTEGER, INTENT(IN)                                :: ispin
+      TYPE(cp_fm_type), INTENT(OUT)                      :: mo_virtual
+      REAL(KIND=dp), DIMENSION(:), INTENT(OUT)           :: evals_virtual
+      INTEGER, INTENT(IN)                                :: iw
+
+      INTEGER                                            :: nmo_available, nmo_computed, nmo_stored, &
+                                                            nmo_virtual, nrow_global
+      TYPE(cp_blacs_env_type), POINTER                   :: context
+      TYPE(cp_fm_struct_type), POINTER                   :: fm_struct_tmp
+      TYPE(cp_fm_type)                                   :: mo_computed, mo_ortho
+      TYPE(cp_fm_type), POINTER                          :: mo_ref
+      TYPE(mo_set_type), DIMENSION(:), POINTER           :: mos_virtual
+      TYPE(mp_para_env_type), POINTER                    :: para_env
+      TYPE(preconditioner_type), POINTER                 :: local_preconditioner
+      TYPE(scf_control_type), POINTER                    :: scf_control
+
+      NULLIFY (context, fm_struct_tmp, local_preconditioner, mo_ref, mos_virtual, para_env, scf_control)
+      CALL get_qs_env(qs_env, scf_control=scf_control, mos_virtual=mos_virtual)
+      CALL get_mo_set(mo_set, mo_coeff=mo_ref, nmo=nmo_available)
+      CALL cp_fm_get_info(mo_ref, context=context, para_env=para_env, nrow_global=nrow_global)
+      nmo_virtual = SIZE(evals_virtual)
+
+      CALL cp_fm_struct_create(fm_struct_tmp, para_env=para_env, context=context, &
+                               nrow_global=nrow_global, ncol_global=nmo_virtual)
+      CALL cp_fm_create(mo_virtual, fm_struct_tmp, name="virtual")
+      CALL cp_fm_struct_release(fm_struct_tmp)
+
+      ! virtual orbitals of the MO output after the SCF
+      nmo_stored = 0
+      IF (scf_control%consistent_mo_output .AND. ASSOCIATED(mos_virtual)) THEN
+         IF (SIZE(mos_virtual) >= ispin) nmo_stored = MIN(nmo_virtual, mos_virtual(ispin)%nmo)
+      END IF
+      IF (nmo_stored > 0) THEN
+         CALL cp_fm_to_fm(mos_virtual(ispin)%mo_coeff, mo_virtual, nmo_stored, 1, 1)
+         evals_virtual(1:nmo_stored) = mos_virtual(ispin)%eigenvalues(1:nmo_stored)
+         IF (iw > 0) THEN
+            WRITE (iw, '(T3,A,I0,A,I0,A)') "Virtual MOs of spin ", ispin, &
+               " from the MO output after the SCF: ", nmo_stored, " (CONSISTENT_MO_OUTPUT)"
+         END IF
+      END IF
+
+      ! compute the remaining virtual orbitals
+      nmo_computed = nmo_virtual - nmo_stored
+      IF (nmo_computed > 0) THEN
+         CALL cp_fm_struct_create(fm_struct_tmp, para_env=para_env, context=context, &
+                                  nrow_global=nrow_global, ncol_global=nmo_computed)
+         CALL cp_fm_create(mo_computed, fm_struct_tmp, name="computed virtual")
+         CALL cp_fm_struct_release(fm_struct_tmp)
+         CALL cp_fm_init_random(mo_computed, nmo_computed)
+         CALL virtual_orbital_preconditioner(local_preconditioner, mo_set, ks_matrix, s_matrix, &
+                                             nmo_computed, para_env, context)
+         IF (nmo_stored > 0) THEN
+            ! orthogonal to the SCF orbitals and to the virtual orbitals taken from the output
+            CALL cp_fm_struct_create(fm_struct_tmp, para_env=para_env, context=context, &
+                                     nrow_global=nrow_global, ncol_global=nmo_available + nmo_stored)
+            CALL cp_fm_create(mo_ortho, fm_struct_tmp, name="orthogonal space")
+            CALL cp_fm_struct_release(fm_struct_tmp)
+            CALL cp_fm_to_fm(mo_ref, mo_ortho, nmo_available, 1, 1)
+            CALL cp_fm_to_fm(mo_virtual, mo_ortho, nmo_stored, 1, nmo_available + 1)
+            CALL ot_eigensolver(matrix_h=ks_matrix, matrix_s=s_matrix, &
+                                matrix_c_fm=mo_computed, matrix_orthogonal_space_fm=mo_ortho, &
+                                eps_gradient=scf_control%eps_lumos, &
+                                preconditioner=local_preconditioner, &
+                                iter_max=scf_control%max_iter_lumos, &
+                                size_ortho_space=nmo_available + nmo_stored)
+            CALL cp_fm_release(mo_ortho)
+         ELSE
+            CALL ot_eigensolver(matrix_h=ks_matrix, matrix_s=s_matrix, &
+                                matrix_c_fm=mo_computed, matrix_orthogonal_space_fm=mo_ref, &
+                                eps_gradient=scf_control%eps_lumos, &
+                                preconditioner=local_preconditioner, &
+                                iter_max=scf_control%max_iter_lumos, &
+                                size_ortho_space=nmo_available)
+         END IF
+         IF (ASSOCIATED(local_preconditioner)) THEN
+            CALL destroy_preconditioner(local_preconditioner)
+            DEALLOCATE (local_preconditioner)
+         END IF
+         ! canonical orbitals and their energies
+         CALL calculate_subspace_eigenvalues(mo_computed, ks_matrix, evals_virtual(nmo_stored + 1:nmo_virtual))
+         CALL cp_fm_to_fm(mo_computed, mo_virtual, nmo_computed, 1, nmo_stored + 1)
+         CALL cp_fm_release(mo_computed)
+      END IF
+
+   END SUBROUTINE get_virtual_orbitals
 
 ! **************************************************************************************************
 !> \brief Warns if active and non-active orbitals are degenerate, i.e. if the active space

@@ -88,6 +88,7 @@ MODULE scf_control_types
 !> \param eps_lumos error on the lumos calculated at the end of the scf
 !> \param max_iter_lumus maxumum number of iterations used to calculate
 !>        the lumos at the end of the scf
+!> \param consistent_mo_output canonicalize the MOs once after the scf; MO output does not rotate them
 !> \param max_scf max scf iterations
 !> \param added_mos additional number of MOs that might be used in the SCF
 !> \param step_size the optimizer step size
@@ -151,6 +152,7 @@ MODULE scf_control_types
                                                ignore_convergence_failure = .FALSE.
       LOGICAL                               :: force_scf_calculation = .FALSE.
       LOGICAL                               :: non_selfconsistent = .FALSE.
+      LOGICAL                               :: consistent_mo_output = .FALSE.
       INTEGER, DIMENSION(2)                 :: added_mos = -1
       LOGICAL, DIMENSION(2)                 :: added_mos_auto = .FALSE.
       INTEGER                               :: roks_scheme = -1
@@ -504,6 +506,7 @@ CONTAINS
       ! should be moved to printkey
       CALL section_vals_val_get(scf_section, "eps_lumo", r_val=scf_control%eps_lumos)
       CALL section_vals_val_get(scf_section, "max_iter_lumo", i_val=scf_control%max_iter_lumos)
+      CALL section_vals_val_get(scf_section, "consistent_mo_output", l_val=scf_control%consistent_mo_output)
 
       ! Extra MOs, e.g. for smearing
       CALL section_vals_val_get(scf_section, "added_mos", c_vals=added_mos)

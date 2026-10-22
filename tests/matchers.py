@@ -496,6 +496,12 @@ registry["AS_NMIXING_deprecated"] = TextPresenceMatcher("NMIXING has no effect")
 registry["FCIDUMP_MS2"] = GenericMatcher(
     r"&FCI .*MS2=\s*([-+0-9]+),", col=1, regex=True
 )
+registry["MO_output_change"] = GenericMatcher(
+    r"CONSISTENT_MO_OUTPUT| Change of the MOs", col=13
+)
+registry["AS_virtuals_from_MO_output"] = TextPresenceMatcher(
+    "from the MO output after the SCF"
+)
 registry["M093"] = GenericMatcher(r"SPGR| SPACE GROUP NUMBER:", col=5)
 registry["M094"] = GenericMatcher(r"KS CSR write|", col=4)
 registry["M095"] = GenericMatcher(r"Fermi energy:", col=3)

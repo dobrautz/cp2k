@@ -7,13 +7,23 @@
 # MO output after the SCF must not change the results. After OT, PRINT%MO and MO_MOLDEN rotate the
 # MOs and the OT derivatives into canonical orbitals; the forces must equal those without output
 # (h2o_ot_forces). ROKS orbitals are shared by both spins: MO_MOLDEN must not rotate them per spin,
-# the active space is the same with and without it.
+# the active space is the same with and without it. With SCF%CONSISTENT_MO_OUTPUT the MOs are made
+# canonical once, all output and the active space then use the same orbitals: the active space
+# checks this (change 0), also for degenerate orbitals, and takes its virtual orbitals from the
+# MO_MOLDEN output after an OT SCF.
 "h2o_ot_forces.inp"                     = [{matcher="E_total", tol=1e-11, ref=-16.81150876492856},
                                            {matcher="Atomic_force_1_z", tol=1e-7, ref=-1.27900942E-02}]
 "h2o_ot_forces_mo_molden.inp"           = [{matcher="E_total", tol=1e-11, ref=-16.81150876492872},
                                            {matcher="Atomic_force_1_z", tol=1e-7, ref=-1.27900942E-02}]
 "h2o_ot_forces_dos_molden.inp"          = [{matcher="E_total", tol=1e-11, ref=-16.81150876492855},
                                            {matcher="Atomic_force_1_z", tol=1e-7, ref=-1.27900942E-02}]
+"h2o_ot_consistent_virtual.inp"         = [{matcher="E_total", tol=1e-11, ref=-16.81150876492872},
+                                           {matcher="Atomic_force_1_z", tol=1e-7, ref=-1.27900500E-02},
+                                           {matcher="MO_output_change", tol=1e-10, ref=0.0},
+                                           {matcher="AS_virtuals_from_MO_output"},
+                                           {matcher="M092", tol=1e-6, ref=23.18476484}]
+"n2_diag_consistent_degenerate.inp"     = [{matcher="E_total", tol=1e-11, ref=-19.39746847848299},
+                                           {matcher="MO_output_change", tol=1e-10, ref=0.0}]
 "ch2_roks_as.inp"                       = [{matcher="E_total", tol=1e-11, ref=-6.53019863407912},
                                            {matcher="M092", tol=1e-8, ref=12.67624284}]
 "ch2_roks_as_molden.inp"                = [{matcher="E_total", tol=1e-11, ref=-6.53019863407913},

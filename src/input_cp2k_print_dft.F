@@ -820,7 +820,8 @@ CONTAINS
       CALL section_release(subsection)
 
       CALL section_create(subsection, __LOCATION__, name="CASINO", &
-                          description="Write a CASINO gwfn.data file to disk.", &
+                          description="Write a CASINO gwfn.data file to disk. Use SCF%CONSISTENT_MO_OUTPUT "// &
+                          "to get the same orbitals as in other MO output and in the active space.", &
                           n_keywords=5, n_subsections=0, repeats=.FALSE.)
       CALL keyword_create(keyword, __LOCATION__, name="FILENAME", &
                           description="Filename for the CASINO gwfn.data file.", &

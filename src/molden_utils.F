@@ -52,6 +52,7 @@ MODULE molden_utils
    USE qs_mo_methods,                   ONLY: mo_output_rotation_allowed,&
                                               rotate_mo_set_to_eigenvectors
    USE qs_mo_types,                     ONLY: mo_set_type
+   USE scf_control_types,               ONLY: scf_control_type
 #include "./base/base_uses.f90"
 
    IMPLICIT NONE
@@ -146,6 +147,7 @@ CONTAINS
       TYPE(dbcsr_type), POINTER                          :: matrix_ks, mo_coeff_deriv
       TYPE(dft_control_type), POINTER                    :: dft_control
       TYPE(gto_basis_set_type), POINTER                  :: orb_basis_set
+      TYPE(scf_control_type), POINTER                    :: scf_control
 
       CALL timeset(routineN, handle)
 
@@ -323,8 +325,8 @@ CONTAINS
             IF (PRESENT(calc_energies)) do_calc_energies = calc_energies
 
             IF (PRESENT(qs_env) .AND. do_calc_energies) THEN
-               CALL get_qs_env(qs_env, matrix_ks=ks, dft_control=dft_control)
-               do_calc_energies = mo_output_rotation_allowed(dft_control)
+               CALL get_qs_env(qs_env, matrix_ks=ks, dft_control=dft_control, scf_control=scf_control)
+               do_calc_energies = mo_output_rotation_allowed(dft_control, scf_control)
             ELSE
                do_calc_energies = .FALSE.
             END IF

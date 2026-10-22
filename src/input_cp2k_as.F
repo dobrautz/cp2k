@@ -120,7 +120,9 @@ CONTAINS
                                        description="Writes the orbitals of the active space Hamiltonian in "// &
                                        "Molden format: the inactive orbitals first, then the active orbitals "// &
                                        "in the orbital order of the FCIDUMP file. These are exactly the "// &
-                                       "orbitals used for the integrals, also for ORBITAL_SELECTION MANUAL.", &
+                                       "orbitals used for the integrals, also for ORBITAL_SELECTION MANUAL. "// &
+                                       "Other MO output (MO_MOLDEN, CASINO, TREXIO) contains the same orbitals "// &
+                                       "only with SCF%CONSISTENT_MO_OUTPUT.", &
                                        print_level=high_print_level, filename="ACTIVE_SPACE")
       CALL keyword_create(keyword, __LOCATION__, name="UNIT", &
                           description="Unit for coordinates and cell in the MOLDEN file.", &

@@ -331,6 +331,12 @@ MODULE qs_environment_types
       REAL(KIND=dp)                                         :: surface_dipole_ref_pos = 0.0_dp
       LOGICAL                                               :: surface_dipole_switch_off = .FALSE.
       TYPE(mo_set_type), DIMENSION(:), POINTER              :: mos_last_converged => NULL()
+      ! virtual MOs computed after the SCF for MO output (SCF%CONSISTENT_MO_OUTPUT), reused by the
+      ! active-space module so that both use the same virtual orbitals
+      TYPE(mo_set_type), DIMENSION(:), POINTER              :: mos_virtual => NULL()
+      ! fingerprint of the MOs after their canonicalization for MO output (SCF%CONSISTENT_MO_OUTPUT),
+      ! (MO, spin), to check that later users (active space) see the same orbitals
+      REAL(KIND=dp), DIMENSION(:, :), ALLOCATABLE           :: mo_fingerprint
       ! tblite
       TYPE(tblite_type), POINTER                            :: tb_tblite => Null()
       TYPE(cp_gauxc_cache_type), POINTER                    :: gauxc_cache => NULL()
@@ -504,6 +510,7 @@ CONTAINS
 !> \param spin_embed_pot ...
 !> \param polar_env ...
 !> \param mos_last_converged ... [SGh]
+!> \param mos_virtual ...
 !> \param eeq ...
 !> \param rhs ...
 !> \param do_rixs ...
@@ -540,7 +547,7 @@ CONTAINS
                          WannierCentres, atprop, ls_scf_env, do_transport, transport_env, v_hartree_rspace, &
                          s_mstruct_changed, rho_changed, potential_changed, forces_up_to_date, mscfg_env, almo_scf_env, &
                          gradient_history, variable_history, embed_pot, spin_embed_pot, polar_env, mos_last_converged, &
-                         eeq, rhs, do_rixs, tb_tblite)
+                         mos_virtual, eeq, rhs, do_rixs, tb_tblite)
 
       TYPE(qs_environment_type), INTENT(IN)              :: qs_env
       TYPE(atomic_kind_type), DIMENSION(:), OPTIONAL, &
@@ -678,7 +685,7 @@ CONTAINS
       REAL(KIND=dp), DIMENSION(:, :), OPTIONAL, POINTER  :: gradient_history, variable_history
       TYPE(pw_r3d_rs_type), OPTIONAL, POINTER            :: embed_pot, spin_embed_pot
       TYPE(polar_env_type), OPTIONAL, POINTER            :: polar_env
-      TYPE(mo_set_type), DIMENSION(:), OPTIONAL, POINTER :: mos_last_converged
+      TYPE(mo_set_type), DIMENSION(:), OPTIONAL, POINTER :: mos_last_converged, mos_virtual
       REAL(KIND=dp), DIMENSION(:), OPTIONAL, POINTER     :: eeq, rhs
       LOGICAL, OPTIONAL                                  :: do_rixs
       TYPE(tblite_type), OPTIONAL, POINTER               :: tb_tblite
@@ -701,6 +708,7 @@ CONTAINS
       IF (PRESENT(mimic)) mimic = qs_env%mimic
       IF (PRESENT(mos)) mos => qs_env%mos
       IF (PRESENT(mos_last_converged)) mos_last_converged => qs_env%mos_last_converged
+      IF (PRESENT(mos_virtual)) mos_virtual => qs_env%mos_virtual
       IF (PRESENT(ewald_env)) ewald_env => qs_env%ewald_env
       IF (PRESENT(ewald_pw)) ewald_pw => qs_env%ewald_pw
       IF (PRESENT(mpools)) mpools => qs_env%mpools
@@ -927,6 +935,7 @@ CONTAINS
       NULLIFY (qs_env%super_cell)
       NULLIFY (qs_env%mos)
       NULLIFY (qs_env%mos_last_converged)
+      NULLIFY (qs_env%mos_virtual)
       NULLIFY (qs_env%mpools)
       NULLIFY (qs_env%ewald_env)
       NULLIFY (qs_env%ewald_pw)
@@ -1107,6 +1116,7 @@ CONTAINS
 !> \param spin_embed_pot ...
 !> \param polar_env ...
 !> \param mos_last_converged ... [SGh]
+!> \param mos_virtual ...
 !> \param eeq ...
 !> \param rhs ...
 !> \param do_rixs ...
@@ -1130,7 +1140,7 @@ CONTAINS
                          do_transport, transport_env, lri_env, lri_density, exstate_env, ec_env, dispersion_env, &
                          harris_env, gcp_env, mp2_env, bs_env, kg_env, force, &
                          kpoints, WannierCentres, almo_scf_env, gradient_history, variable_history, embed_pot, &
-                         spin_embed_pot, polar_env, mos_last_converged, eeq, rhs, do_rixs, tb_tblite)
+                         spin_embed_pot, polar_env, mos_last_converged, mos_virtual, eeq, rhs, do_rixs, tb_tblite)
 
       TYPE(qs_environment_type), INTENT(INOUT)           :: qs_env
       TYPE(cell_type), OPTIONAL, POINTER                 :: super_cell
@@ -1207,7 +1217,7 @@ CONTAINS
       REAL(KIND=dp), DIMENSION(:, :), OPTIONAL, POINTER  :: gradient_history, variable_history
       TYPE(pw_r3d_rs_type), OPTIONAL, POINTER            :: embed_pot, spin_embed_pot
       TYPE(polar_env_type), OPTIONAL, POINTER            :: polar_env
-      TYPE(mo_set_type), DIMENSION(:), OPTIONAL, POINTER :: mos_last_converged
+      TYPE(mo_set_type), DIMENSION(:), OPTIONAL, POINTER :: mos_last_converged, mos_virtual
       REAL(KIND=dp), DIMENSION(:), OPTIONAL, POINTER     :: eeq, rhs
       LOGICAL, OPTIONAL                                  :: do_rixs
       TYPE(tblite_type), OPTIONAL, POINTER               :: tb_tblite
@@ -1228,6 +1238,7 @@ CONTAINS
       IF (PRESENT(mimic)) qs_env%mimic = mimic
       IF (PRESENT(mos)) qs_env%mos => mos
       IF (PRESENT(mos_last_converged)) qs_env%mos_last_converged => mos_last_converged
+      IF (PRESENT(mos_virtual)) qs_env%mos_virtual => mos_virtual
       IF (PRESENT(ls_scf_env)) qs_env%ls_scf_env => ls_scf_env
       IF (PRESENT(almo_scf_env)) qs_env%almo_scf_env => almo_scf_env
       IF (PRESENT(do_transport)) qs_env%do_transport = do_transport
@@ -1494,6 +1505,13 @@ CONTAINS
          END DO
          DEALLOCATE (qs_env%mos_last_converged)
       END IF
+      IF (ASSOCIATED(qs_env%mos_virtual)) THEN
+         DO i = 1, SIZE(qs_env%mos_virtual)
+            CALL deallocate_mo_set(qs_env%mos_virtual(i))
+         END DO
+         DEALLOCATE (qs_env%mos_virtual)
+      END IF
+      IF (ALLOCATED(qs_env%mo_fingerprint)) DEALLOCATE (qs_env%mo_fingerprint)
 
       IF (ASSOCIATED(qs_env%mo_derivs)) THEN
          DO I = 1, SIZE(qs_env%mo_derivs)
@@ -1735,6 +1753,13 @@ CONTAINS
          END DO
          DEALLOCATE (qs_env%mos_last_converged)
       END IF
+      IF (ASSOCIATED(qs_env%mos_virtual)) THEN
+         DO i = 1, SIZE(qs_env%mos_virtual)
+            CALL deallocate_mo_set(qs_env%mos_virtual(i))
+         END DO
+         DEALLOCATE (qs_env%mos_virtual)
+      END IF
+      IF (ALLOCATED(qs_env%mo_fingerprint)) DEALLOCATE (qs_env%mo_fingerprint)
 
       IF (ASSOCIATED(qs_env%mo_derivs)) THEN
          DO I = 1, SIZE(qs_env%mo_derivs)
